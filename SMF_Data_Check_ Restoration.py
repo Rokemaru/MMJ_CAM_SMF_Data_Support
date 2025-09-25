@@ -68,7 +68,7 @@ def reconstruct_mode():
     print(f"2. 復元したデータを '{output_filename}' に保存します...")
     with open(output_filename, 'wb') as f:
         f.write(clean_data)
-    print(f"✅ 成功: '{output_filename}' を作成しました。")
+    print(f"成功: '{output_filename}' を作成")
 
 def compare_mode():
     """モード2: 通常データとSMFデータを比較する"""
@@ -93,7 +93,7 @@ def compare_mode():
     print("-" * 30)
 
     if plain_bytes == cleaned_smf_bytes:
-        print("✅ 完全に一致しました。データの中身は同一です。")
+        print("完全に一致!!!")
     else:
         print("不一致です・・・ﾄﾞﾝ(　ﾟдﾟ)ﾏｲ")
         if len(plain_bytes) != len(cleaned_smf_bytes):
