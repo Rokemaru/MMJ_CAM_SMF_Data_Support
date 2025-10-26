@@ -4,6 +4,9 @@ import sys
 from pathlib import Path
 from enum import IntEnum
 import re # Import regular expressions module
+import csv # Added for CSV processing
+from datetime import datetime # Added for timestamp processing
+import traceback # Added for detailed error reporting
 
 # --- (StatusCode and ErrorCode definitions remain the same) ---
 class StatusCode(IntEnum):
@@ -44,29 +47,34 @@ code_meanings.update({member.value: member.name for member in ErrorCode})
 # --- Common Core Functions ---
 
 def clean_smf_packet_data(smf_packet_bytes: bytes) -> bytes:
-    # --- (This function remains the same as the previous version) ---
+    """
+    Removes headers from SMF data assuming 64-byte packets with 3-byte headers.
+    """
     reconstructed_data = bytearray()
     PACKET_SIZE = 64
     HEADER_SIZE = 3
     packet_count = 0
     if not smf_packet_bytes: return b''
-    first_packet = smf_packet_bytes[:PACKET_SIZE]
-    if len(first_packet) > HEADER_SIZE: reconstructed_data.extend(first_packet[HEADER_SIZE:])
-    packet_count = 1
-    for i in range(PACKET_SIZE, len(smf_packet_bytes), PACKET_SIZE):
+
+    # Process packets in chunks of PACKET_SIZE
+    for i in range(0, len(smf_packet_bytes), PACKET_SIZE):
         packet = smf_packet_bytes[i : i + PACKET_SIZE]
-        if len(packet) > HEADER_SIZE: reconstructed_data.extend(packet[HEADER_SIZE:])
-        else: reconstructed_data.extend(packet)
+        if len(packet) > HEADER_SIZE:
+            reconstructed_data.extend(packet[HEADER_SIZE:])
+        # Keep remaining bytes if packet is smaller than header size (likely end of data)
+        # This part might need adjustment based on exact packet structure rules
+        # For now, keeping the partial packet if it's <= HEADER_SIZE
+        elif len(packet) > 0:
+             reconstructed_data.extend(packet) # Or maybe just ignore? Depends on protocol.
         packet_count += 1
-    last_packet_len = len(smf_packet_bytes) % PACKET_SIZE if len(smf_packet_bytes) >= PACKET_SIZE else len(smf_packet_bytes)
-    if last_packet_len > 0 and last_packet_len <= HEADER_SIZE: estimated_original_size = len(reconstructed_data)
-    elif last_packet_len > HEADER_SIZE: estimated_original_size = len(reconstructed_data)
-    else: estimated_original_size = len(reconstructed_data)
-    actual_size = min(len(reconstructed_data), estimated_original_size)
-    return bytes(reconstructed_data[:actual_size])
+
+    # Original size estimation logic seems overly complex and potentially error-prone.
+    # The clean_smf_packet_data function should primarily focus on stripping headers.
+    # The resulting size is simply the length of the reconstructed_data.
+    # Let's simplify this.
+    return bytes(reconstructed_data)
 
 
-# --- Updated hex_string_to_bytes function ---
 def hex_string_to_bytes(hex_str: str) -> bytes | None:
     """
     Cleans various hex string formats (comma-separated, space-separated,
@@ -117,21 +125,23 @@ def hex_string_to_bytes(hex_str: str) -> bytes | None:
         return None
 
 def parse_status_codes(data: bytes) -> list[int]:
-    # --- (This function remains the same) ---
+    """
+    Parses byte data into a list of 16-bit unsigned integers (status/error codes).
+    """
     codes = []
     for i in range(0, len(data), 2):
         chunk = data[i:i+2]
         if len(chunk) < 2:
             print(f"警告: 最後のデータ ({chunk.hex()}) は2バイト未満のため無視されました。")
             break
-        code = struct.unpack('>H', chunk)[0]
+        code = struct.unpack('>H', chunk)[0] # Big-endian (Network byte order)
         codes.append(code)
     return codes
 
-# --- Mode-specific functions (reconstruct_mode, compare_mode) remain the same ---
+# --- Mode-specific functions ---
 def reconstruct_mode():
-    """モード1: SMFデータからファイルを復元、またはステータスコードを解読する"""
-    print("\n--- データ復元/解読モード ---")
+    """モード1: SMFデータからファイルを復元、またはステータスコードを解読する (手動入力)"""
+    print("\n--- データ復元/解読モード (手動入力) ---")
 
     print("SMFの16進数データを貼り付けてください (複数行可、最後にCtrl+D(Linux/Mac)またはCtrl+Z Enter(Win)):")
     hex_lines = []
@@ -208,20 +218,21 @@ def reconstruct_mode():
             print(f"成功: '{output_filename}' を作成 ({len(clean_data)} バイト)")
         except IOError as e:
             print(f"エラー: ファイル '{output_filename}' の保存に失敗しました: {e}")
+        print("\n--- 処理完了 ---")
 
 def compare_mode():
-    # --- (This function remains the same as the previous version) ---
+    """モード2: 2つの16進数データを比較する (手動入力)"""
     print("\n--- データ比較モード ---")
     print("【1/2】通常のJPG/H264/StatusCode等の16進数データを貼り付けてください (複数行可、最後にCtrl+D/Z):")
     plain_hex_lines = []
-    try: 
+    try:
         while True: plain_hex_lines.append(input())
     except EOFError: pass
     plain_hex = "\n".join(plain_hex_lines)
 
     print("\n【2/2】SMFの16進数データを貼り付けてください (複数行可、最後にCtrl+D/Z):")
     smf_hex_lines = []
-    try: 
+    try:
         while True: smf_hex_lines.append(input())
     except EOFError: pass
     smf_hex = "\n".join(smf_hex_lines)
@@ -273,18 +284,221 @@ def compare_mode():
         if diff_count == 0 and len(plain_bytes) != len(cleaned_smf_bytes): print("   - データ内容は一致する範囲で同じですが、長さが異なります。")
         elif diff_count > max_diff_to_show: print(f"   - ... 他にも {diff_count - max_diff_to_show} 箇所の相違点があります。")
         elif diff_count > 0: print(f"   - 合計 {diff_count} 箇所の相違点が見つかりました。")
+    print("\n--- 処理完了 ---")
 
-# --- Main menu remains the same ---
+# --- New Function: Reconstruct from CSV ---
+def reconstruct_from_csv():
+    """モード3: CSVログファイルから指定範囲のデータを復元する"""
+    print("\n--- CSVファイルからデータ復元モード ---")
+
+    # 1. CSVファイルパスの入力
+    while True:
+        csv_path_str = input("CSVファイルのパスを入力してください: ").strip()
+        # Handle quoted paths (common in Windows when dragging/dropping)
+        csv_path_str = csv_path_str.strip('"')
+        csv_path = Path(csv_path_str)
+        if csv_path.is_file() and csv_path.suffix.lower() == '.csv':
+            break
+        else:
+            print(f"!! エラー: '{csv_path_str}' が見つからないか、CSVファイルではありません。")
+
+    # 2. 開始・終了タイムスタンプの入力
+    print("\n抽出したいデータの開始時刻と終了時刻を入力してください。")
+    print("形式例: 2025-10-24 21:17:42.407 (ミリ秒まで)")
+    while True:
+        start_time_str = input("開始時刻: ").strip()
+        try:
+            start_time = datetime.strptime(start_time_str, '%Y-%m-%d %H:%M:%S.%f')
+            break
+        except ValueError:
+            try: # Try without milliseconds if the first format fails
+                start_time = datetime.strptime(start_time_str, '%Y-%m-%d %H:%M:%S')
+                print("   -> (ミリ秒なしで解釈しました)")
+                break
+            except ValueError:
+                print("!! エラー: 時刻の形式が正しくありません。例に従って入力してください。")
+    while True:
+        end_time_str = input("終了時刻: ").strip()
+        try:
+            end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S.%f')
+            if end_time >= start_time:
+                break
+            else:
+                print("!! エラー: 終了時刻は開始時刻以降である必要があります。")
+        except ValueError:
+            try: # Try without milliseconds
+                end_time = datetime.strptime(end_time_str, '%Y-%m-%d %H:%M:%S')
+                print("   -> (ミリ秒なしで解釈しました)")
+                if end_time >= start_time:
+                    break
+                else:
+                    print("!! エラー: 終了時刻は開始時刻以降である必要があります。")
+            except ValueError:
+                print("!! エラー: 時刻の形式が正しくありません。例に従って入力してください。")
+
+    # 3. 復元するファイル種類の選択
+    print("\n復元するファイルの種類を選択してください:")
+    print("   1: JPG 画像")
+    print("   2: H264 動画")
+    while True:
+        file_choice = input("番号を入力 (1 or 2): ").strip()
+        if file_choice in ['1', '2']:
+            ext = '.jpg' if file_choice == '1' else '.h264'
+            break
+        else:
+            print("!! 無効な番号です。")
+
+    # 4. 出力ファイル名の入力
+    base_filename = input("\n出力するファイル名（拡張子なし）を入力してください: ").strip()
+    if not base_filename:
+        # Generate default filename based on start time
+        base_filename = f'restored_from_csv_{start_time.strftime("%Y%m%d_%H%M%S")}'
+        print(f"-> ファイル名が未入力のため、デフォルト名 '{base_filename}' を使用します。")
+    output_filename = base_filename + ext
+
+    # 5. CSV読み込みとデータ抽出・結合
+    print(f"\nCSVファイル '{csv_path.name}' を読み込み、指定範囲のデータを抽出・結合します...")
+    reconstructed_data = bytearray()
+    processed_lines = 0
+    skipped_lines = 0
+    # Determine data start column based on your CSV structure (byte[8] corresponds to index 10 if timestamp and tx are first two columns)
+    # Let's try to find 'byte[8]' in the header for robustness
+    data_start_col_index = -1
+
+    try:
+        with open(csv_path, 'r', newline='', encoding='utf-8') as csvfile: # Specify encoding
+            reader = csv.reader(csvfile)
+            try:
+                header = next(reader) # Read header row
+            except StopIteration:
+                print("!! エラー: CSVファイルが空か、ヘッダー行がありません。")
+                return
+
+            # Find column indices dynamically
+            try:
+                ts_col = header.index('timestamp')
+                tx_col = header.index('tx')
+                # Find the index of 'byte[8]'
+                data_start_header = 'byte[8]'
+                if data_start_header in header:
+                    data_start_col_index = header.index(data_start_header)
+                else:
+                    # Fallback if 'byte[8]' is not found (assuming fixed structure)
+                    # Check if enough columns exist for a potential fixed structure
+                    potential_fixed_index = 10 # Assuming timestamp(0), tx(1), byte[0]..byte[7] (8 cols) -> index 10
+                    if len(header) > potential_fixed_index:
+                        print(f"!! 警告: ヘッダーに '{data_start_header}' が見つかりません。列インデックス {potential_fixed_index} からデータを読み込みます。")
+                        data_start_col_index = potential_fixed_index
+                    else:
+                        print(f"!! エラー: ヘッダーに '{data_start_header}' が見つからず、列数も足りません。データ開始位置を特定できません。")
+                        return
+
+            except ValueError as e:
+                print(f"!! エラー: CSVヘッダーに必要な列 ('timestamp', 'tx', or '{data_start_header}') が見つかりません: {e}。処理を中断します。")
+                return
+
+            # --- Read data rows ---
+            for row_num, row in enumerate(reader, start=2): # start=2 because header is line 1
+                if not row or len(row) <= max(ts_col, tx_col, data_start_col_index):
+                    # print(f"!! 警告: 行 {row_num} は空または列数が不足しています。スキップします。")
+                    skipped_lines += 1
+                    continue # Skip empty or short rows
+
+                try:
+                    # Timestamp parsing (handle potential format variations)
+                    timestamp_str = row[ts_col].strip()
+                    current_time = None
+                    try:
+                        current_time = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S.%f')
+                    except ValueError:
+                        try:
+                            current_time = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                        except ValueError:
+                           # print(f"!! 警告: 行 {row_num} のタイムスタンプ形式が不正です: '{timestamp_str}'。スキップします。")
+                           skipped_lines += 1
+                           continue # Skip rows with invalid timestamp format
+
+                    # Check if within the specified time range
+                    if start_time <= current_time <= end_time:
+                        # Check if it's received data (tx=0)
+                        if row[tx_col].strip() == '0':
+                            # Extract and append data bytes from data_start_col_index onwards
+                            has_valid_byte = False
+                            for cell in row[data_start_col_index:]:
+                                cell_cleaned = cell.strip()
+                                if cell_cleaned: # Only process non-empty cells
+                                    try:
+                                        byte_val = int(cell_cleaned, 16)
+                                        reconstructed_data.append(byte_val)
+                                        has_valid_byte = True
+                                    except ValueError:
+                                        # print(f"!! 警告: 行 {row_num} に16進数でないデータが含まれます: '{cell_cleaned}'。このバイト以降は無視します。")
+                                        # Stop processing bytes for this row if invalid data found
+                                        break
+                            if has_valid_byte:
+                                processed_lines += 1
+                            else:
+                                # Row was within time range and tx=0, but had no valid data bytes
+                                skipped_lines += 1
+                        else:
+                            # Tx=1 line skipped
+                            skipped_lines += 1
+                    elif current_time > end_time:
+                        # Stop reading if timestamp exceeds end_time (assuming sorted CSV)
+                        print("   -> 終了時刻に達したため、読み込みを終了します。")
+                        break
+                    else:
+                        # Timestamp before start_time, skip
+                        skipped_lines += 1
+
+                except Exception as e:
+                    # Catch other potential errors during row processing
+                    # print(f"!! 警告: 行 {row_num} の処理中に予期せぬエラー: {e}。スキップします。")
+                    # traceback.print_exc() # Uncomment for debugging specific row errors
+                    skipped_lines += 1
+                    continue
+
+    except FileNotFoundError:
+        print(f"!! エラー: CSVファイル '{csv_path}' が見つかりません。")
+        return
+    except Exception as e:
+        print(f"!! エラー: CSVファイルの読み込み/処理中に予期せぬエラーが発生しました: {e}")
+        traceback.print_exc() # Show detailed error traceback
+        return
+
+    print(f"   -> 抽出範囲内の {processed_lines} 行からデータを結合しました。")
+    print(f"   -> {skipped_lines} 行は範囲外、送信データ、またはデータ抽出エラーのためスキップしました。")
+    print(f"   -> 結合後の合計データサイズ: {len(reconstructed_data)} バイト")
+
+    if not reconstructed_data:
+        print("!! エラー: 指定範囲内に抽出可能なデータが見つかりませんでした。タイムスタンプ、txフラグ、データ内容を確認してください。")
+        return
+
+    # 6. ファイル保存
+    print(f"\n結合したデータを '{output_filename}' に保存します...")
+    try:
+        with open(output_filename, 'wb') as f:
+            f.write(reconstructed_data)
+        print(f"成功: '{output_filename}' を作成 ({len(reconstructed_data)} バイト)")
+    except IOError as e:
+        print(f"エラー: ファイル '{output_filename}' の保存に失敗しました: {e}")
+
+    print("\n--- 処理完了 ---")
+
+
+# --- Main menu ---
 def main():
     print("="*40); print("SMFデータ 復元/比較ツール"); print("="*40)
     print("実行したい操作を選択してください:")
-    print("   1: ファイル復元 または ステータス/エラーコード解読")
-    print("   2: 2つのデータを比較する")
+    print("   1: (手動入力) ファイル復元 または ステータス/エラーコード解読")
+    print("   2: (手動入力) 2つのデータを比較する")
+    print("   3: (CSV入力) CSVログファイルからデータを復元") # New option
     while True:
-        choice = input("番号を入力 (1 or 2): ").strip()
+        choice = input("番号を入力 (1, 2, or 3): ").strip()
         if choice == '1': reconstruct_mode(); break
         elif choice == '2': compare_mode(); break
-        else: print("!! 無効な番号です。1か2を入力してください。")
+        elif choice == '3': reconstruct_from_csv(); break # Call the new function
+        else: print("!! 無効な番号です。1, 2, 3 のいずれかを入力してください。")
 
 if __name__ == "__main__":
     main()
